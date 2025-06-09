@@ -231,6 +231,17 @@ private:
   void initializeGlobalAliases();
   void initializeGlobalObjects(ExecutionState &state);
 
+  // switch PC/Stack to go into thread/back to main if necessary
+  // happens if cond-signal was called
+  // if pthread-create was called, mainPC/Stack needs to be saved
+  // *after* all processing of current instruction is done, but
+  // *before* possibility for new state
+  void checkThreads(ExecutionState &state);
+  // separate to "jump over" ptc-exec hack and set mainPC/Stack correctly
+  // *after* ptc-exec was set to be executed, but
+  // *before* it actually is executed
+  void checkThreadNew(ExecutionState &state);
+
   void stepInstruction(ExecutionState &state);
   void updateStates(ExecutionState *current);
   void transferToBasicBlock(llvm::BasicBlock *dst, 
@@ -318,6 +329,11 @@ private:
                               ref<Expr> address,
                               ref<Expr> value /* undef if read */,
                               KInstruction *target /* undef if write */);
+
+  ref<Expr> read8(ExecutionState &state, const ObjectState *os, ref<Expr> index8) const;
+  ref<Expr> read8(ExecutionState &state, const ObjectState *os, unsigned index8) const;
+  ref<Expr> read(ExecutionState &state, const ObjectState *os, ref<Expr> offset, Expr::Width width) const;
+  ref<Expr> read(ExecutionState &state, const ObjectState *os, unsigned offset, Expr::Width width) const;
 
   void executeMakeSymbolic(ExecutionState &state, const MemoryObject *mo,
                            const std::string &name);

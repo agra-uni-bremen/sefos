@@ -40,6 +40,7 @@ void klee::instrument(bool CheckDivZero, bool CheckOvershift,
   // module.
   legacy::PassManager pm;
   pm.add(new RaiseAsmPass());
+  pm.add(new SystemCPass());
 
   // This pass will scalarize as much code as possible so that the Executor
   // does not need to handle operands of vector type for most instructions

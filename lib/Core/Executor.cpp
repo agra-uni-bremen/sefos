@@ -180,6 +180,19 @@ cl::opt<bool>
                                   "querying the solver (default=true)"),
                          cl::cat(SolvingCat));
 
+cl::opt<int> ConstArrayThreshold(
+    "const-array-threshold",
+    cl::desc(
+        "If a read expression involves a memory object that is larger than the "
+        "threshold (in bytes), only the relevant address range in the object "
+        "will be considered. For this, the solver will have to determine this "
+        "relevant range, resulting in additional queries. If the memory objects "
+        "are large enough, these additional queries improve the performance "
+        "because they are fairly fast in comparison to large array queries. "
+        "Set to -1 to disable, 0 for all, or custom value>0 (default=0)"),
+    cl::init(0),
+    cl::cat(SolvingCat));
+
 
 /*** External call policy options ***/
 
@@ -1647,6 +1660,9 @@ void Executor::unwindToNextLandingpad(ExecutionState &state) {
         llvm::Function *personality_fn =
             kmodule->module->getFunction("_klee_eh_cxx_personality");
         KFunction *kf = kmodule->functionMap[personality_fn];
+        if(!kf) {
+          klee_error("could not find _klee_eh_cxx_personality for exception handling. make sure to use --libcxx. if that fails, remove --optimize option");
+        }
 
         state.pushFrame(state.prevPC, kf);
         state.pc = kf->instructions;
@@ -1944,11 +1960,23 @@ void Executor::executeCall(ExecutionState &state, KInstruction *ki, Function *f,
     // from just an instruction (unlike LLVM).
     KFunction *kf = kmodule->functionMap[f];
 
+    StackFrame *parentFrame = 0;
+    if(state.newThread) {
+//      klee_warning("creating empty stack for new thread, keeping all stackframe info for new frame"); //SYSCDEBUG
+      parentFrame = &state.mainStack[state.mainStack.size() - 1];
+      state.stack = ExecutionState::stack_ty();
+      state.newThread = false;
+    }
     state.pushFrame(state.prevPC, kf);
     state.pc = kf->instructions;
 
-    if (statsTracker)
-      statsTracker->framePushed(state, &state.stack[state.stack.size() - 2]);
+    if (statsTracker) {
+      if(parentFrame) {
+        statsTracker->framePushed(state, parentFrame);
+      } else {
+        statsTracker->framePushed(state, &state.stack[state.stack.size() - 2]);
+      }
+    }
 
     // TODO: support zeroext, signext, sret attributes
 
@@ -2707,7 +2735,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> left = eval(ki, 0, state).value;
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = UgtExpr::create(left, right);
-      bindLocal(ki, state,result);
+      bindLocal(ki, state, result);
       break;
     }
 
@@ -3602,6 +3630,57 @@ void Executor::doDumpStates() {
   updateStates(nullptr);
 }
 
+void Executor::checkThreadNew(ExecutionState &state) {
+  if(state.newThread) { // need to jump over the ptc-exec hack, set mainPC/Stack now
+//    klee_warning("check thread new"); //SYSCDEBUG
+    state.mainPC = state.pc;
+    state.mainStack = state.stack;
+    // don't think I actually use curthreadid in the short time of init thread
+    // call, but should set it to !0 anyways for consistency
+    state.curThreadID = 1;
+  }
+}
+
+void Executor::checkThreads(ExecutionState &state) {
+  if (state.newThreadID) {
+//    klee_warning("check threads: new thread, register condition"); //SYSCDEBUG
+    state.threadPCs[state.newThreadID] = state.pc;
+    state.threadStacks[state.newThreadID] = state.stack;
+
+    state.curThreadID = 0; // main
+    state.pc = state.mainPC;
+    state.stack = state.mainStack;
+
+    state.newThreadID = 0;
+  } else if(state.enterThreadID) {
+//    klee_warning("check threads: enter"); //SYSCDEBUG
+    if(state.curThreadID) { // not currently in main
+//      klee_warning("enter from thread"); //SYSCDEBUG
+      state.threadPCs[state.curThreadID] = state.pc;
+      state.threadStacks[state.curThreadID] = state.stack;
+      if(state.threadPCs.find(state.enterThreadID)!=state.threadPCs.end()) {
+//        klee_warning("enter other thread"); //SYSCDEBUG
+        state.pc = state.threadPCs[state.enterThreadID];
+        state.stack = state.threadStacks[state.enterThreadID];
+        state.curThreadID = state.enterThreadID;
+      } else { // enter main
+//        klee_warning("enter main"); //SYSCDEBUG
+        state.pc = state.mainPC;
+        state.stack = state.mainStack;
+        state.curThreadID = 0;
+      }
+    } else { // from main
+//      klee_warning("enter from main"); //SYSCDEBUG
+      state.mainPC = state.pc;
+      state.mainStack = state.stack;
+      state.pc = state.threadPCs[state.enterThreadID];
+      state.stack = state.threadStacks[state.enterThreadID];
+      state.curThreadID = state.enterThreadID;
+    }
+    state.enterThreadID = 0;
+  }
+}
+
 void Executor::run(ExecutionState &initialState) {
   bindModuleConstants();
 
@@ -3634,6 +3713,7 @@ void Executor::run(ExecutionState &initialState) {
       ExecutionState &state = *lastState;
       KInstruction *ki = state.pc;
       stepInstruction(state);
+      checkThreadNew(state);
 
       executeInstruction(state, ki);
       timers.invoke();
@@ -3641,6 +3721,8 @@ void Executor::run(ExecutionState &initialState) {
       if (::dumpExecutionTree)
         dumpExecutionTree();
       updateStates(&state);
+
+      checkThreads(state);
 
       if ((stats::instructions % 1000) == 0) {
         int numSeeds = 0, numStates = 0;
@@ -3684,6 +3766,7 @@ void Executor::run(ExecutionState &initialState) {
     ExecutionState &state = searcher->selectState();
     KInstruction *ki = state.pc;
     stepInstruction(state);
+    checkThreadNew(state);
 
     executeInstruction(state, ki);
     timers.invoke();
@@ -3697,6 +3780,7 @@ void Executor::run(ExecutionState &initialState) {
       // update searchers when states were terminated early due to memory pressure
       updateStates(nullptr);
     }
+    checkThreads(state);
   }
 
   delete searcher;
@@ -4088,7 +4172,7 @@ void Executor::callExternalFunction(ExecutionState &state, KInstruction *target,
       ConstantExpr::create((uint64_t)errno_addr, Expr::Int64), result);
   if (!resolved)
     klee_error("Could not resolve memory object for errno");
-  ref<Expr> errValueExpr = result.second->read(0, sizeof(*errno_addr) * 8);
+  ref<Expr> errValueExpr = read(state, result.second, 0, sizeof(*errno_addr) * 8);
   ConstantExpr *errnoValue = dyn_cast<ConstantExpr>(errValueExpr);
   if (!errnoValue) {
     terminateStateOnExecError(state,
@@ -4409,6 +4493,246 @@ void Executor::resolveExact(ExecutionState &state,
   }
 }
 
+ref<Expr> Executor::read8(ExecutionState &state, const ObjectState *os, ref<Expr> index8) const {
+  // no simple checks from os::read8 possible bc symbolic index
+  // make sure index is not constant
+  assert(!isa<ConstantExpr>(index8) &&
+         "read8-symbolic constant offset passed to symbolic executor::read8");
+
+  unsigned base, sizeCheck;
+  os->fastRangeCheckOffset(index8, &base, &sizeCheck);
+  os->flushRangeForRead(base, sizeCheck);
+
+  const UpdateList &ul = os->getUpdates();
+  assert(ul.root && "read8-symbolic updatelist without root?");
+  // some readexpr-shortcuts possible?
+  ref<Expr> res8tmp(0);
+  bool reChecks = ReadExpr::createFast(ul,index8,res8tmp);
+  if(reChecks) {// no complex readexpr needed :)
+    return res8tmp;
+  }
+
+  ref<Expr> index8X = ZExtExpr::create(index8, Expr::Int32);
+
+  // check for relevant updates. need to take from old updatelist bc not yet transferred
+  // first: reverse collection of updates, so later add to short ul is in right order
+  unsigned numWrites = ul.head ? ul.head->getSize() : 0;
+  std::vector< std::pair< ref<Expr>, ref<Expr> > > writes(numWrites);
+  const auto *un = ul.head.get();
+  for (unsigned i = numWrites; i != 0; un = un->next.get()) {
+    --i;
+    writes[i] = std::make_pair(un->index, un->value);
+  }
+
+  std::vector<std::pair<ref<Expr>,ref<Expr>>> relevantUpdates;
+  for(unsigned begin=0; begin != writes.size(); ++begin) {
+    ref<Expr> cond = EqExpr::create(index8, writes[begin].first);
+    bool maybetrue;
+    if(!solver->mayBeTrue(state.constraints,
+                           cond,
+                           maybetrue, state.queryMetaData)) {
+      klee_warning("solver error for executor::read with symbolic offset");
+      return ReadExpr::create(ul,index8X);
+    }
+    if(maybetrue) { // index == updateNode.index
+      relevantUpdates.push_back(writes[begin]);
+    }
+  }
+
+  // got all relevant updates
+
+  if(relevantUpdates.size()==1 && ul.root->isSymbolicArray()) {
+    // prioritise update over init value
+    return relevantUpdates[0].second;
+  }
+  if(relevantUpdates.size() == 0 && ul.root->isSymbolicArray()) {
+    // no relevant updates, no constant values, i give up
+    // klee_warning("read-symbolic symbolic array w/o updates"); // SYSCDEBUG
+    return ReadExpr::create(ul,index8X);
+  }
+
+  TimerStatIncrementer timer(stats::resolveTime);
+  // minimum for this offset is the minimum from unchanged offset
+  std::pair<ref<Expr>,ref<Expr>> indexRange = solver->getRange(
+      state.constraints,index8,state.queryMetaData);
+
+  ConstantExpr *minE = dyn_cast<ConstantExpr>(indexRange.first);
+  assert(minE && "invalid min range value read-symbolic");
+  ConstantExpr *maxE = dyn_cast<ConstantExpr>(indexRange.second);
+  assert(maxE && "invalid min range value read-symbolic");
+
+  uint64_t mini = minE->getZExtValue();
+  uint64_t maxi = maxE->getZExtValue();
+  unsigned objectMax = ul.root->constantValues.size();
+  uint64_t sizeArray = maxi+1-mini;
+  if(mini >= objectMax) {
+    klee_warning("weird object size mismatch!");
+    return ReadExpr::create(ul,index8X);
+  }
+  maxi = maxi < objectMax ? maxi : (objectMax - 1);
+  assert(mini <= maxi);
+  assert(mini < objectMax);
+
+  // create shorter updatelist (array)
+  std::vector<ref<ConstantExpr>> constantShort(sizeArray);
+  for(uint64_t it=mini;sizeArray&&it<=maxi;++it) {
+    constantShort[it-mini] = ul.root->constantValues[it];
+  }
+  static unsigned id = 0;
+  //  const Array *array = new Array(
+  const Array *array = os->getArrayCache()->CreateArray(
+      "const_arr_hacks" + llvm::utostr(++id), sizeArray, &constantShort[0],
+      &constantShort[0]+sizeArray
+  );
+  UpdateList ulShort = UpdateList(array,0);
+
+  ref<Expr> i8sub = SubExpr::create(index8,minE);
+  ref<Expr> i8subX = ZExtExpr::create(i8sub,Expr::Int32);
+  assert(!isa<ConstantExpr>(i8sub) &&
+         "read8-symbolic constant offset after subtraction");
+
+  if(relevantUpdates.size()==0 && ul.root->isConstantArray()) {
+    // no updates to read
+    return ReadExpr::create(ulShort, i8subX);
+  }
+
+  // multiple relevant updates AND constant array?
+  // add relevant updates to the updatelist
+  for(unsigned begin=0;begin!=relevantUpdates.size();++begin) {
+    ulShort.extend(SubExpr::create(relevantUpdates[begin].first,minE),relevantUpdates[begin].second);
+  }
+
+  return ReadExpr::create(ulShort,i8subX);
+}
+
+// ------------------------------------------------
+
+ref<Expr> Executor::read8(ExecutionState &state, const ObjectState *os, unsigned index8) const {
+  // fast checks from os::read8 possible?
+  ref<Expr> res8tmp(0);
+  if(os->readSimpleChecks(index8, res8tmp)) { // known symbolic or concrete byte
+    return res8tmp;
+  }
+
+  ref<Expr> index8const = ConstantExpr::create(index8,Expr::Int32);
+  // have to look at updates too
+  const UpdateList &ul = os->getUpdates();
+  assert(ul.root && "read8-concrete updatelist without root?");
+
+  bool reChecks = ReadExpr::createFast(ul, index8const, res8tmp);
+  if(reChecks) { // no complex readexpr needed :)
+    return res8tmp;
+  }
+
+  // go through updates from oldest to latest so i can add them back correctly later on
+  unsigned numWrites = ul.head ? ul.head->getSize() : 0;
+  std::vector< std::pair< ref<Expr>, ref<Expr> > > writes(numWrites);
+  const auto *un = ul.head.get();
+  for (unsigned i = numWrites; i != 0; un = un->next.get()) {
+    --i;
+    writes[i] = std::make_pair(un->index, un->value);
+  }
+
+  std::vector<std::pair<ref<Expr>,ref<Expr>>> relevantUpdates;
+  for(unsigned begin=0; begin != writes.size(); ++begin) {
+    ref<Expr> cond = EqExpr::create(index8const, writes[begin].first);
+    bool maybetrue = false;
+    if(!solver->mayBeTrue(state.constraints,
+                           cond,
+                           maybetrue, state.queryMetaData)) {
+      klee_warning("solver error for executor::read with const offset");
+      return ReadExpr::create(ul,index8const);
+    }
+    if(maybetrue) { // index == updateNode.index
+      relevantUpdates.push_back(writes[begin]);
+    }
+  }
+
+  // got all relevant updates
+
+  if(relevantUpdates.size()==1 && ul.root->isSymbolicArray()) {
+    // no other possible choice
+    return relevantUpdates[0].second;
+  }
+  if(relevantUpdates.size()==0 && ul.root->isConstantArray()) {
+    // fallback to constant value
+    return ul.root->constantValues[index8];
+  }
+  // if symbolic array and no relevant updates, i just kind of give up i guess?
+  if(relevantUpdates.size()==0 && ul.root->isSymbolicArray()) {
+    // klee_warning("read-concrete symbolic array w/o updates"); // SYSCDEBUG
+    return ReadExpr::create(ul,index8const);
+  }
+
+  unsigned shortSize = ul.root->isSymbolicArray() ? 0 : 1;
+  std::vector<ref<ConstantExpr>> constantShort(shortSize);
+  if(shortSize)
+    constantShort[0] = ul.root->constantValues[index8];
+
+  static unsigned id = 0;
+  const Array *array = os->getArrayCache()->CreateArray(
+      "const_arr_hackc" + llvm::utostr(++id), constantShort.size(), &constantShort[0],
+      &constantShort[0]+constantShort.size()
+  );
+  UpdateList ulShort = UpdateList(array,0);
+
+  // add relevant updates
+  for(unsigned begin=0;begin!=relevantUpdates.size();++begin) {
+    ulShort.extend(SubExpr::create(relevantUpdates[begin].first,index8const),relevantUpdates[begin].second);
+  }
+
+  return ReadExpr::create(ulShort,
+                          ConstantExpr::create(0,Expr::Int32));
+}
+
+ref<Expr> Executor::read(ExecutionState &state, const ObjectState *os, ref<Expr> offset, Expr::Width width) const {
+  // Truncate offset to 32-bits.
+  offset = ZExtExpr::create(offset, Expr::Int32);
+
+  // Check for reads at constant offsets.
+  if (ConstantExpr *CE = dyn_cast<ConstantExpr>(offset))
+    return read(state, os, CE->getZExtValue(32), width);
+
+  // Treat bool specially, it is the only non-byte sized write we allow.
+  if (width == Expr::Bool)
+    return ExtractExpr::create(os->read8(offset), 0, Expr::Bool);
+
+  // maximum = maximum for expression of offset+width (basically)
+  unsigned NumBytes = width / 8;
+  assert(width == NumBytes * 8 && "Invalid width for read size!");
+
+  ref<Expr> res(0);
+  for(unsigned i=0; i!=NumBytes; ++i) {
+    unsigned idx = Context::get().isLittleEndian() ? i : (NumBytes - i - 1);
+    ref<Expr> byte = read8(state,os,AddExpr::create(offset, ConstantExpr::create(idx,Expr::Int32)));
+    res = i ? ConcatExpr::create(byte,res) : byte;
+  }
+
+  return res;
+}
+
+ref<Expr> Executor::read(ExecutionState &state, const ObjectState *os, unsigned offset, Expr::Width width) const {
+  // special treatment bool, it is the only non-byte sized write we allow.
+  if (width == Expr::Bool)
+    return ExtractExpr::create(os->read8(offset), 0, Expr::Bool);
+
+  TimerStatIncrementer timer(stats::resolveTime);
+
+  unsigned NumBytes = width / 8;
+  assert(width == NumBytes * 8 && "Invalid width for read size!");
+
+  ref<Expr> res(0);
+  for(unsigned i=0; i!=NumBytes; ++i) {
+    unsigned idx = Context::get().isLittleEndian() ? i : (NumBytes - i - 1);
+    unsigned index = offset+idx;
+
+    // fast checks from os::read8 possible?
+    ref<Expr> byte = read8(state,os,index);
+    res = i ? ConcatExpr::create(byte,res) : byte;
+  }
+  return res;
+}
+
 void Executor::executeMemoryOperation(ExecutionState &state,
                                       bool isWrite,
                                       ref<Expr> address,
@@ -4499,7 +4823,7 @@ void Executor::executeMemoryOperation(ExecutionState &state,
             wos->write(offset, value);
           }
         } else {
-          ref<Expr> result = os->read(offset, type);
+          ref<Expr> result = (ConstArrayThreshold >= 0 && mo->size > ConstArrayThreshold) ? read(state, os, offset, type) : os->read(offset,type);
 
           if (interpreterOpts.MakeConcreteSymbolic)
             result = replaceReadWithSymbolic(state, result);
@@ -4549,7 +4873,7 @@ void Executor::executeMemoryOperation(ExecutionState &state,
           wos->write(mo->getOffsetExpr(address), value);
         }
       } else {
-        ref<Expr> result = os->read(mo->getOffsetExpr(address), type);
+        ref<Expr> result = (ConstArrayThreshold >= 0 && mo->size > ConstArrayThreshold) ? read(state, os, mo->getOffsetExpr(address), type) : os->read(mo->getOffsetExpr(address),type);
         bindLocal(target, *bound, result);
       }
     }

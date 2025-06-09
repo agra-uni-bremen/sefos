@@ -72,6 +72,21 @@ StackFrame::~StackFrame() {
   delete[] locals; 
 }
 
+StackFrame& StackFrame::operator=(const StackFrame &s) {
+  caller = s.caller;
+  kf = s.kf;
+  callPathNode = s.callPathNode;
+  allocas = s.allocas;
+  minDistToUncoveredOnReturn = s.minDistToUncoveredOnReturn;
+  varargs = s.varargs;
+
+  delete[] locals;
+  locals = new Cell[s.kf->numRegisters];
+  for (unsigned i=0; i<s.kf->numRegisters; i++)
+    locals[i] = s.locals[i];
+  return *this;
+}
+
 /***/
 
 ExecutionState::ExecutionState(KFunction *kf, MemoryManager *mm)
@@ -89,10 +104,44 @@ ExecutionState::~ExecutionState() {
     cur_mergehandler->removeOpenState(this);
   }
 
-  while (!stack.empty()) popFrame();
+  if(curThreadID)
+    threadStacks[curThreadID] = stack;
+  else
+    mainStack = stack;
+
+  curThreadID = 0; // main
+  while(!mainStack.empty()) {
+    // pop main stack
+    const StackFrame &sf = mainStack.back();
+    for (const auto *memoryObject : sf.allocas) {
+      deallocate(memoryObject);
+      addressSpace.unbindObject(memoryObject);
+    }
+    mainStack.pop_back();
+  }
+  for(auto ts : threadStacks) {
+    curThreadID = ts.first;
+    while(!ts.second.empty()) {
+      const StackFrame &sf = ts.second.back();
+      for (const auto *memoryObject : sf.allocas) {
+        deallocate(memoryObject);
+        addressSpace.unbindObject(memoryObject);
+      }
+      ts.second.pop_back();
+    }
+  }
 }
 
 ExecutionState::ExecutionState(const ExecutionState& state):
+    newThread(state.newThread),
+    registerNew(state.registerNew),
+    enterThreadID(state.enterThreadID),
+    newThreadID(state.newThreadID),
+    curThreadID(state.curThreadID),
+    mainPC(state.mainPC),
+    mainStack(state.mainStack),
+    threadPCs(state.threadPCs),
+    threadStacks(state.threadStacks),
     pc(state.pc),
     prevPC(state.prevPC),
     stack(state.stack),
@@ -144,6 +193,22 @@ void ExecutionState::popFrame() {
     addressSpace.unbindObject(memoryObject);
   }
   stack.pop_back();
+}
+
+void ExecutionState::enterThread(bool isNew, uint64_t cond) {
+//  klee_warning("state: enter thread"); //SYSCDEBUG
+  newThread = isNew;
+  registerNew = isNew;
+  enterThreadID = cond;
+  newThreadID = 0;
+}
+void ExecutionState::registerThread(uint64_t cond) {
+  if(!registerNew) return;
+//  klee_warning("state: register thread"); //SYSCDEBUG
+  newThreadID = cond;
+  registerNew = false;
+  newThread = false;
+  enterThreadID = 0;
 }
 
 void ExecutionState::deallocate(const MemoryObject *mo) {

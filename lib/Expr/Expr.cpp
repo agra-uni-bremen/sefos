@@ -535,6 +535,46 @@ unsigned Array::computeHash() {
 }
 /***/
 
+bool ReadExpr::createFast(const UpdateList &ul, ref<Expr> index, ref<Expr> &res) {
+  // rollback update nodes if possible
+
+  // Iterate through the update list from the most recent to the
+  // least recent to find a potential written value for a concrete index;
+  // stop if an update with symbolic has been found as we don't know which
+  // array element has been updated
+  auto un = ul.head.get();
+  bool updateListHasSymbolicWrites = false;
+  for (; un; un = un->next.get()) {
+    ref<Expr> cond = EqExpr::create(index, un->index);
+    if (ConstantExpr *CE = dyn_cast<ConstantExpr>(cond)) {
+      if (CE->isTrue()) {
+        // Return the found value
+        res = un->value;
+        return true;
+      }
+    } else {
+      // Found write with symbolic index
+      updateListHasSymbolicWrites = true;
+      break;
+    }
+  }
+
+  if (ul.root->isConstantArray() && !updateListHasSymbolicWrites) {
+    // No updates with symbolic index to a constant array have been found
+    if (ConstantExpr *CE = dyn_cast<ConstantExpr>(index)) {
+      assert(CE->getWidth() <= 64 && "Index too large");
+      uint64_t concreteIndex = CE->getZExtValue();
+      uint64_t size = ul.root->size;
+      if (concreteIndex < size) {
+        res = ul.root->constantValues[concreteIndex];
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 ref<Expr> ReadExpr::create(const UpdateList &ul, ref<Expr> index) {
   // rollback update nodes if possible
 

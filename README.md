@@ -1,9 +1,15 @@
+SEFOS Symbolic Execution For Original SystemC
+=============================================
+
+`SEFOS` is an extension of `KLEE` which focuses on hardware models written in SystemC.
+It includes two main modifications:
+1. A domain-specific threading support based on the PThread SystemC implementation.
+2. A technique for minimising the arrays in SMT queries, to support the large object sizes of SystemC modules.
+
+---------------------
+
 KLEE Symbolic Virtual Machine
 =============================
-
-[![Build Status](https://github.com/klee/klee/workflows/CI/badge.svg)](https://github.com/klee/klee/actions?query=workflow%3ACI)
-[![Build Status](https://api.cirrus-ci.com/github/klee/klee.svg)](https://cirrus-ci.com/github/klee/klee)
-[![Coverage](https://codecov.io/gh/klee/klee/branch/master/graph/badge.svg)](https://codecov.io/gh/klee/klee)
 
 `KLEE` is a symbolic virtual machine built on top of the LLVM compiler
 infrastructure. Currently, there are two primary components:

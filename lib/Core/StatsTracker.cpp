@@ -830,6 +830,15 @@ void StatsTracker::computeReachableUncovered() {
   static bool init = true;
   const InstructionInfoTable &infos = *km->infos;
   StatisticManager &sm = *theStatisticManager;
+
+  Function *ptc_signal = m->getFunction("pthread_cond_signal");
+  if(!ptc_signal) {
+    klee_warning("could not find a ptc signal function");
+  }
+  Function *yield_fn = m->getFunction("_ZN7sc_core18sc_cor_pkg_pthread5yieldEPNS_6sc_corE");
+  if(!yield_fn) {
+    klee_warning("could not find a sc-yield function");
+  }
   
   if (init) {
     init = false;
@@ -853,7 +862,13 @@ void StatsTracker::computeReachableUncovered() {
                                                 std::vector<Function*>()));
             } else if (Function *target = getDirectCallTarget(
                            cb, /*moduleIsFullyLinked=*/true)) {
-              callTargets[inst].push_back(target);
+              if(&*fnIt == yield_fn && target == ptc_signal) {
+                callTargets[inst] =
+                    std::vector<Function*>(km->escapingFunctions.begin(),
+                                            km->escapingFunctions.end());
+              } else {
+                callTargets[inst].push_back(target);
+              }
             } else {
               callTargets[inst] =
                 std::vector<Function*>(km->escapingFunctions.begin(),
@@ -913,7 +928,7 @@ void StatsTracker::computeReachableUncovered() {
            ++it) {
         Instruction *inst = *it;
         unsigned bestThrough = 0;
-
+        
         if (isa<CallInst>(inst) || isa<InvokeInst>(inst)) {
           std::vector<Function*> &targets = callTargets[inst];
           for (std::vector<Function*>::iterator fnIt = targets.begin(),
@@ -974,7 +989,7 @@ void StatsTracker::computeReachableUncovered() {
         Instruction *inst = &*it;
         unsigned id = infos.getInfo(*inst).id;
         instructions.push_back(inst);
-        sm.setIndexedValue(stats::minDistToUncovered, 
+        sm.setIndexedValue(stats::minDistToUncovered,
                            id, 
                            sm.getIndexedValue(stats::uncoveredInstructions, id));
       }
@@ -993,7 +1008,7 @@ void StatsTracker::computeReachableUncovered() {
       uint64_t best, cur = best = sm.getIndexedValue(stats::minDistToUncovered,
                                                      infos.getInfo(*inst).id);
       unsigned bestThrough = 0;
-      
+
       if (isa<CallInst>(inst) || isa<InvokeInst>(inst)) {
         std::vector<Function*> &targets = callTargets[inst];
         for (std::vector<Function*>::iterator fnIt = targets.begin(),

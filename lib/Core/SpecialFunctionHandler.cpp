@@ -146,6 +146,10 @@ static constexpr std::array handlerInfo = {
   // operator new(unsigned long)
   add("_Znwm", handleNew, true),
 
+  add("pthread_create", handlePthreadCreate, true),
+  add("pthread_cond_wait", handlePthreadCondWait, true),
+  add("pthread_cond_signal", handlePthreadCondSignal, true),
+
 #undef addDNR
 #undef add
 };
@@ -637,7 +641,7 @@ void SpecialFunctionHandler::handleGetErrno(ExecutionState &state,
       ConstantExpr::create((uint64_t)errno_addr, Expr::Int64), result);
   if (!resolved)
     executor.terminateStateOnUserError(state, "Could not resolve address for errno");
-  executor.bindLocal(target, state, result.second->read(0, Expr::Int32));
+  executor.bindLocal(target, state, executor.read(state, result.second, 0, Expr::Int32));
 }
 
 void SpecialFunctionHandler::handleErrnoLocation(
@@ -840,4 +844,84 @@ void SpecialFunctionHandler::handleMarkGlobal(ExecutionState &state,
     assert(!mo->isLocal);
     mo->isGlobal = true;
   }
+}
+
+void SpecialFunctionHandler::handlePthreadCreate(klee::ExecutionState &state,
+                                                 klee::KInstruction *target,
+                                                 std::vector<ref<Expr>> &arguments) {
+  if (arguments.size() != 4) {
+    executor.terminateStateOnUserError(state,
+                                       "invalid amount of arguments to pthread_create");
+    return;
+  }
+//  klee_warning("pthread create! special"); //SYSCDEBUG
+  state.enterThread(true, 0);
+    // thread methode wird in dupliziertem ptc aufgerufen
+    // etwas unschön, aber mir fällt gerade keine andere Möglichkeit ein
+  executor.bindLocal(target, state, ConstantExpr::create(0,Expr::Int32));
+}
+
+uint64_t SpecialFunctionHandler::getConditionAddress(klee::ExecutionState &state,
+                                                     ref<Expr> condExpr) {
+  ObjectPair op;
+  condExpr = executor.toUnique(state, condExpr);
+  if (!isa<ConstantExpr>(condExpr)) {
+    klee_warning("symbolic thread condition encountered in pthread-cond-...");
+    return 0;
+  }
+  ref<ConstantExpr> cond = cast<ConstantExpr>(condExpr);
+  if (!state.addressSpace.resolveOne(cond, op)) {
+    klee_warning("invalid condition pointer passed to pthread-cond-...");
+    return 0;
+  }
+  const MemoryObject *mo = op.first;
+
+  auto relativeOffset = mo->getOffsetExpr(cond);
+  size_t offset = cast<ConstantExpr>(relativeOffset)->getZExtValue();
+  if(offset == 0) {
+//    klee_warning("zero offset in memobj for condition"); //SYSCDEBUG
+    return 0;
+  } else {
+//    std::string n1 = "offset found: " + std::to_string(offset);
+//    klee_warning(n1.c_str()); //SYSCDEBUG
+  }
+  uint64_t final_condition = cond->getZExtValue() + offset;
+
+//  std::string n2 = "final condition address: " + std::to_string(final_condition);
+//  klee_warning(n2.c_str()); //SYSCDEBUG
+  return final_condition;
+}
+
+void SpecialFunctionHandler::handlePthreadCondSignal(klee::ExecutionState &state,
+                                                     klee::KInstruction *target,
+                                                     std::vector<ref<Expr>> &arguments) {
+  if (arguments.size() != 1) {
+    executor.terminateStateOnUserError(state,
+                                       "invalid amount of arguments to pthread_cond_signal");
+    return;
+  }
+//  klee_message("pthread cond signal special"); //SYSCDEBUG
+  uint64_t condAddress = getConditionAddress(state,arguments[0]);
+  if(condAddress) {
+    state.enterThread(false,condAddress);
+  }
+
+  executor.bindLocal(target, state, ConstantExpr::create(0,Expr::Int32));
+}
+
+void SpecialFunctionHandler::handlePthreadCondWait(klee::ExecutionState &state,
+                                                   klee::KInstruction *target,
+                                                   std::vector<ref<Expr>> &arguments) {
+  if (arguments.size() != 2) {
+    executor.terminateStateOnUserError(state,
+                                       "invalid amount of arguments to pthread_cond_wait");
+    return;
+  }
+//  klee_message("pthread cond wait special"); //SYSCDEBUG
+  uint64_t condAddress = getConditionAddress(state,arguments[0]);
+  if(condAddress) {
+    state.registerThread(condAddress);
+  }
+
+  executor.bindLocal(target, state, ConstantExpr::create(0,Expr::Int32));
 }

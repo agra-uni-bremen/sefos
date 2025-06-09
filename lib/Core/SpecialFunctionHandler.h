@@ -71,7 +71,7 @@ namespace klee {
     /* Convenience routines */
 
     std::string readStringAtAddress(ExecutionState &state, ref<Expr> address);
-    
+    uint64_t getConditionAddress(klee::ExecutionState &state, ref<Expr> arg);
     /* Handlers */
 
 #define HANDLER(name) void name(ExecutionState &state, \
@@ -119,6 +119,9 @@ namespace klee {
     HANDLER(handleUnderConstrained);
     HANDLER(handleWarning);
     HANDLER(handleWarningOnce);
+    HANDLER(handlePthreadCondWait);
+    HANDLER(handlePthreadCondSignal);
+    HANDLER(handlePthreadCreate);
 #undef HANDLER
   };
 } // End klee namespace

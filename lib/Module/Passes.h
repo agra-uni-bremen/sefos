@@ -196,6 +196,14 @@ public:
   OptNonePass() : llvm::ModulePass(ID) {}
   bool runOnModule(llvm::Module &M) override;
 };
+
+/// make sure the systemc methods dealing with thread calling execute correct instructions only
+class SystemCPass : public llvm::ModulePass {
+public:
+  static char ID;
+  SystemCPass() : llvm::ModulePass(ID) {}
+  bool runOnModule(llvm::Module &M) override;
+};
 } // namespace klee
 
 #endif /* KLEE_PASSES_H */

@@ -588,7 +588,8 @@ public:
     r->computeHash();
     return r;
   }
-  
+
+  static bool createFast(const UpdateList &updates, ref<Expr> i, ref<Expr> &res);
   static ref<Expr> create(const UpdateList &updates, ref<Expr> i);
   
   Width getWidth() const { assert(updates.root); return updates.root->getRange(); }

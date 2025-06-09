@@ -360,6 +360,18 @@ void ObjectState::setKnownSymbolic(unsigned offset,
   }
 }
 
+bool ObjectState::readSimpleChecks(unsigned index, ref<Expr> &res) const {
+  if(isByteConcrete(index)) {
+    res = ConstantExpr::create(concreteStore[index], Expr::Int8);
+    return true;
+  } else if (isByteKnownSymbolic(index)) {
+    res = knownSymbolics[index];
+    return true;
+  }
+  assert(!isByteUnflushed(index) && "unflushed byte without cache value");
+  return false;
+}
+
 /***/
 
 ref<Expr> ObjectState::read8(unsigned offset) const {

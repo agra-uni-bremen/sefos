@@ -65,6 +65,7 @@ struct StackFrame {
   StackFrame(KInstIterator caller, KFunction *kf);
   StackFrame(const StackFrame &s);
   ~StackFrame();
+  StackFrame& operator=(const StackFrame &s);
 };
 
 /// Contains information related to unwinding (Itanium ABI/2-Phase unwinding)
@@ -159,6 +160,25 @@ public:
   using stack_ty = std::vector<StackFrame>;
 
   // Execution - Control Flow specific
+
+  // temporary values to properly enter a thread after the relevant instruction
+  // was processed by the executor
+  bool newThread; // was new thread created? necessary for correct setting of mainpc/stack AFTER ptc-exec hack
+  bool registerNew; // should new thread be registered on cond-wait?
+  uint64_t enterThreadID=0; // next thread to enter. if not in map, is main
+  uint64_t newThreadID=0; // new thread to register
+  uint64_t curThreadID=0; // 0=main, otherwise in thread. set in checkthreads
+
+  /// @brief Pointer to instruction to be executed in main after return from thread
+  // separate needed in the beginning (main cond not known)
+  // oculd afterwards throw it into map with threads, but that would make code confusing
+  KInstIterator mainPC;
+  stack_ty mainStack;
+
+  /// @brief each thread's next instruction
+  std::map<uint64_t ,KInstIterator> threadPCs;
+  /// @brief each thread's stack
+  std::map<uint64_t ,stack_ty> threadStacks;
 
   /// @brief Pointer to instruction to be executed after the current
   /// instruction
@@ -275,6 +295,9 @@ public:
 
   void pushFrame(KInstIterator caller, KFunction *kf);
   void popFrame();
+
+  void enterThread(bool isNew, uint64_t cond);
+  void registerThread(uint64_t cond);
 
   void deallocate(const MemoryObject *mo);
 

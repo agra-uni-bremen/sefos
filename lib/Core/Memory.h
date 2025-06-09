@@ -224,6 +224,7 @@ public:
   ref<Expr> read(ref<Expr> offset, Expr::Width width) const;
   ref<Expr> read(unsigned offset, Expr::Width width) const;
   ref<Expr> read8(unsigned offset) const;
+  ref<Expr> read8(ref<Expr> offset) const;
 
   void write(unsigned offset, ref<Expr> value);
   void write(ref<Expr> offset, ref<Expr> value);
@@ -233,6 +234,11 @@ public:
   void write32(unsigned offset, uint32_t value);
   void write64(unsigned offset, uint64_t value);
   void print() const;
+
+  bool readSimpleChecks(unsigned index, ref<Expr> &res) const;
+  const UpdateList &getUpdates() const;
+
+  ArrayCache *getArrayCache() const;
 
   /// Generate concrete values for each symbolic byte of the object and put them
   /// in the concrete store.
@@ -244,20 +250,18 @@ public:
   void flushToConcreteStore(Executor &executor, ExecutionState &state,
                             bool concretize);
 
-private:
-  const UpdateList &getUpdates() const;
+  void fastRangeCheckOffset(ref<Expr> offset, unsigned *base_r,
+                            unsigned *size_r) const;
+  void flushRangeForRead(unsigned rangeBase, unsigned rangeSize) const;
 
+private:
   void makeConcrete();
 
   void makeSymbolic();
 
-  ref<Expr> read8(ref<Expr> offset) const;
   void write8(unsigned offset, ref<Expr> value);
   void write8(ref<Expr> offset, ref<Expr> value);
 
-  void fastRangeCheckOffset(ref<Expr> offset, unsigned *base_r, 
-                            unsigned *size_r) const;
-  void flushRangeForRead(unsigned rangeBase, unsigned rangeSize) const;
   void flushRangeForWrite(unsigned rangeBase, unsigned rangeSize);
 
   /// isByteConcrete ==> !isByteKnownSymbolic
@@ -274,8 +278,6 @@ private:
   void markByteFlushed(unsigned offset);
   void markByteUnflushed(unsigned offset);
   void setKnownSymbolic(unsigned offset, Expr *value);
-
-  ArrayCache *getArrayCache() const;
 };
   
 } // End klee namespace
